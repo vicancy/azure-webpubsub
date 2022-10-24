@@ -2,7 +2,7 @@
   "profiles": {
     "local-host": {
       "commandName": "Project",
-      "commandLineArgs": "-p 8080"
+      "commandLineArgs": "-p 8081"
     }
   }
 }

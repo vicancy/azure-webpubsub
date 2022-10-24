@@ -6,7 +6,7 @@ using Azure.ResourceManager.Relay;
 using Azure.ResourceManager.Relay.Models;
 using Azure.ResourceManager.Resources;
 
-using local_host.TunnelConnections;
+using local_host;
 
 using Microsoft.Azure.Relay;
 using Microsoft.Extensions.CommandLineUtils;
@@ -164,60 +164,28 @@ internal class TunnelService
     {
         var credential = new DefaultAzureCredential(true);
 
-        var listener = new TunnelConnectionClient(credential, _options.Hub, _loggerFactory);
-
-        // Subscribe to the status events.
-        listener.Connecting += () => { Console.WriteLine("Connecting"); };
-        listener.Connected += () => { Console.WriteLine("Connected"); };
-        listener.Disconnected += () => { Console.WriteLine("Disconnected"); };
+        var listener = new TunnelClient(credential, _options.Hub, _loggerFactory);
 
         // Provide an HTTP request handler
         listener.RequestHandler = async (request) =>
         {
             using var httpClient = _httpClientFactory.CreateClient();
-            _logger.LogInformation($"Received request from {request.GetDisplayUrl()}");
-            //https://zityang-myrelaycap7qxjzpzfkq.servicebus.windows.net/zityang-worksta
+            _logger.LogInformation($"Received request from: '{request.GetDisplayUrl()}'");
             var targetUri = new UriBuilder("http", "localhost", _options.LocalPort).Uri;
+
+            // Invoke local http server
+            // Or self-host a server?
             var proxiedRequest = CreateProxyHttpRequest(request, targetUri);
-            _logger.LogInformation($"Proxied request to {proxiedRequest.GetDisplayUrl()}");
+            _logger.LogInformation($"Proxied request to '{proxiedRequest.GetDisplayUrl()}'");
             try
             {
-                return await httpClient.SendAsync(proxiedRequest);
-
-                //var response = new HttpResponseMessage()
-                //// Do something with context.Request.Url, HttpMethod, Headers, InputStream...
-                //context.Response.StatusCode = responseMessage.StatusCode;
-                //_logger.LogInformation($"Received response status code: {responseMessage.StatusCode}");
-
-                //foreach (var (key, header) in responseMessage.Headers)
-                //{
-                //    if (string.Equals("Connection", key, StringComparison.OrdinalIgnoreCase)) continue;
-                //    if (string.Equals("Keep-Alive", key, StringComparison.OrdinalIgnoreCase)) continue;
-                //    foreach (var val in header)
-                //    {
-                //        context.Response.Headers.Add(key, val);
-                //    }
-                //}
-
-                //if (responseMessage.Content != null)
-                //{
-                //    foreach (var (key, header) in responseMessage.Content.Headers)
-                //    {
-                //        foreach (var val in header)
-                //        {
-                //            context.Response.Headers.Add(key, val);
-                //        }
-                //    }
-
-                //    await responseMessage.Content.CopyToAsync(context.Response.OutputStream);
-                //}
-
-                //// The context MUST be closed here
-                //context.Response.Close();
+                var response = await httpClient.SendAsync(proxiedRequest);
+                _logger.LogInformation($"Received proxied response from '{proxiedRequest.GetDisplayUrl()}: {response.StatusCode}'");
+                return response;
             }
             catch (Exception e)
             {
-                _logger.LogError($"Error forwarding request {proxiedRequest.GetDisplayUrl()}: {e.Message}");
+                _logger.LogError($"Error forwarding request '{proxiedRequest.GetDisplayUrl()}': {e.Message}");
                 var response = new HttpResponseMessage(HttpStatusCode.InternalServerError);
                 response.Content = new StringContent(e.Message);
                 return response;
@@ -227,10 +195,15 @@ internal class TunnelService
         // Opening the listener establishes the control channel to
         // the Azure Relay service. The control channel is continuously 
         // maintained, and is reestablished when connectivity is disrupted.
-
-        await listener.StartAsync();
-
-        Console.WriteLine("Server listening");
+        try
+        {
+            await listener.ConnectTask;
+            Console.WriteLine("Server listening");
+        }
+        catch (Exception e)
+        {
+            Console.WriteLine("Error starting the listener: " + e.Message);
+        }
 
         // Start a new thread that will continuously read the console.
         await Console.In.ReadLineAsync();

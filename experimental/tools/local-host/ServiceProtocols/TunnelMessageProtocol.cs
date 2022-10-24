@@ -1,308 +1,203 @@
 ﻿using System;
 using System.Buffers;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
+using System.IO;
+using System.Net.Http;
 
-using MessagePack;
+using static Microsoft.Azure.SignalR.HttpTunnel.TunnelMessageProtocol;
 
-using Microsoft.Azure.SignalR;
-
-namespace local_host.ServiceProtocols
+namespace Microsoft.Azure.SignalR.HttpTunnel
 {
-
     // payloads inside WebSocket connection:
     // 1. ackId
     // 2. http request message: method, host, headers, content
     // 3. http response message: headers, content
-    public class TunnelMessageProtocol
+
+    public class TunnelMessageProtocol : IMessageProtocol<TunnelMessage>
     {
         public static readonly TunnelMessageProtocol Instance = new TunnelMessageProtocol();
 
-        public const byte HttpRequestMessageType = 0;
-        public const byte HttpResponseMessageType = 1;
-        public const byte OnDemandConnectionMessageType = 5;
+        public enum TunnelMessageType
+        {
+            HttpRequest = 0,
+            HttpResponse = 1,
+        }
 
         public abstract class TunnelMessage
         {
-            public int Type { get; set; }
-        }
-
-        public class OnDemandConnectionMessage : TunnelMessage
-        {
-            public string[] Targets { get; set; }
+            public abstract TunnelMessageType Type { get; }
         }
 
         public class RequestMessage : TunnelMessage
         {
+            public override TunnelMessageType Type => TunnelMessageType.HttpRequest;
             public int AckId { get; set; }
 
             public string HttpMethod { get; set; }
 
-            public string Host { get; set; }
+            public string Url { get; set; }
 
             public Dictionary<string, string[]> Headers { get; set; }
 
-            public byte[] Content { get; set; }
-
-            public HttpRequestMessage ToRequest()
-            {
-                var request = new HttpRequestMessage()
-                {
-                    Method = new HttpMethod(HttpMethod),
-                    RequestUri = new Uri(Host),
-                    Content = new ByteArrayContent(Content),
-                };
-                foreach(var header in Headers)
-                {
-                    request.Headers.Add(header.Key, header.Value);
-                }
-            }
-
-            public static async Task<RequestMessage> FromHttpRequestMessage(HttpRequestMessage http, int ackId)
-            {
-                return new RequestMessage
-                {
-                    AckId = ackId,
-                    HttpMethod = http.Method.Method,
-                    Host = http.RequestUri?.ToString(),
-                    Headers = http.Headers.ToDictionary(s => s.Key, s => s.Value.ToArray()),
-                    Content = http.Content == null ? Array.Empty<byte>() : await http.Content.ReadAsByteArrayAsync(),
-                };
-            }
+            public ReadOnlyMemory<byte> Content { get; set; }
         }
 
         public class ResponseMessage : TunnelMessage
         {
+            public override TunnelMessageType Type => TunnelMessageType.HttpResponse;
             public int AckId { get; set; }
             public int StatusCode { get; set; }
 
             public Dictionary<string, string[]> Headers { get; set; }
 
-            public byte[] Content { get; set; }
-
-            public HttpResponseMessage ToResponse()
-            {
-
-            }
-
-            public static async Task<ResponseMessage> FromHttpResponseMessage(HttpResponseMessage http, int ackId)
-            {
-                return new ResponseMessage
-                {
-                    AckId = ackId,
-                    StatusCode = (int)http.StatusCode,
-                    Headers = http.Headers.ToDictionary(s => s.Key, s => s.Value.ToArray()),
-                    Content = http.Content == null ? Array.Empty<byte>() : await http.Content.ReadAsByteArrayAsync(),
-                };
-            }
+            public ReadOnlyMemory<byte> Content { get; set; }
         }
 
-        public bool TryParseMessage(byte[] input, out TunnelMessage message)
+        public bool TryParse(ref ReadOnlySequence<byte> buffer, out TunnelMessage message)
         {
-            message = null;
+            if (buffer.Length <= 4)
+            {
+                message = null;
+                return false;
+            }
+
+            var length = ReadLength(ref buffer);
+            if (buffer.Length < length + 4)
+            {
+                message = null;
+                return false;
+            }
+
+            var content = buffer.Slice(4, length).AsStream();
+            buffer = buffer.Slice(length + 4);
             try
             {
-                var typeId = ParseMeta(input, out var offset);
-                if (typeId == HttpRequestMessageType)
-                {
-                    message = ParseHttpRequestMessage(input, ref offset);
-                }
-                else if (typeId == HttpResponseMessageType)
-                {
-                    message = ParseHttpResponseMessage(input, ref offset);
-                }
-                else if (typeId == OnDemandConnectionMessageType)
-                {
-                    message = ParseOnDemandConnectionMessage(input, ref offset);
-                }
+                message = Parse(content, false);
+                return message != null;
             }
-            catch
+            catch (Exception)
             {
-                // Ignore
+                message = null;
+                return false;
             }
 
-            return message != null;
+            int ReadLength(ref ReadOnlySequence<byte> buffer)
+            {
+                if (buffer.FirstSpan.Length > 4)
+                {
+                    return BitConverter.ToInt32(buffer.FirstSpan[0..4]);
+                }
+                else
+                {
+                    Span<byte> copy = stackalloc byte[4];
+                    buffer.Slice(0, 4).CopyTo(copy);
+                    return BitConverter.ToInt32(copy);
+                }
+            }
         }
 
-        public bool TryParseOnDemandConnectionMessage(byte[] input, out OnDemandConnectionMessage message)
-        {
-            message = null;
-            try
-            {
-                var typeId = ParseMeta(input, out var offset);
-                if (typeId == OnDemandConnectionMessageType)
-                {
-                    message = ParseOnDemandConnectionMessage(input, ref offset);
-                }
-            }
-            catch
-            {
-                // Ignore
-            }
+        public static TunnelMessage Parse(Stream stream) =>
+            Parse(stream, true);
 
-            return message != null;
+        private static TunnelMessage Parse(Stream stream, bool throwOnError)
+        {
+            var reader = MessagePackReader.Create(stream)
+                .Array()
+                .Int(out var type);
+            switch ((TunnelMessageType)type)
+            {
+                case TunnelMessageType.HttpRequest:
+                    {
+                        reader.Int(out var ackId)
+                            .Text(out var method)
+                            .Text(out var host)
+                            .Item("headers").Map().ToDict<string[]>((r, b) => r.StringArray(out b.Value), out var headers)
+                            .Bytes(out var body)
+                            .EndArray()
+                            .Terminate();
+                        return new RequestMessage
+                        {
+                            AckId = ackId,
+                            HttpMethod = method,
+                            Url = host,
+                            Headers = headers,
+                            Content = body
+                        };
+                    }
+                case TunnelMessageType.HttpResponse:
+                    {
+                        reader.Int(out var ackId)
+                            .Int(out var code)
+                            .Item("headers").Map().ToDict<string[]>((r, b) => r.StringArray(out b.Value), out var headers)
+                            .Bytes(out var body)
+                            .EndArray()
+                            .Terminate();
+                        return new ResponseMessage
+                        {
+                            AckId = ackId,
+                            StatusCode = code,
+                            Headers = headers,
+                            Content = body
+                        };
+                    }
+                default:
+                    if (throwOnError)
+                    {
+                        throw new NotSupportedException($"Message with type:{type} is not supported");
+                    }
+                    return null;
+            }
         }
 
-        public IMemoryOwner<byte> WriteMessage(TunnelMessage message)
+        public void Write(TunnelMessage message, IBufferWriter<byte> writer)
         {
-            using var lease = MemoryBufferWriter.GetLocalLease();
-            try
-            {
-                MessagePackBinary.WriteArrayHeader(lease.Writer, 2);
-
-                switch (message)
-                {
-                    case RequestMessage request:
-                        MessagePackBinary.WriteByte(lease.Writer, HttpRequestMessageType);
-                        return WriteRequestMessage(lease.Writer, request);
-                    case ResponseMessage response:
-                        MessagePackBinary.WriteByte(lease.Writer, HttpResponseMessageType);
-                        return WriteResponseMessage(lease.Writer, response);
-                    case OnDemandConnectionMessage request:
-                        MessagePackBinary.WriteByte(lease.Writer, OnDemandConnectionMessageType);
-                        return WriteRequestConnectionMessage(lease.Writer, request);
-                }
-            }
-            catch
-            {
-                // Ignored
-            }
-
-            return null;
+            var m = writer.GetMemory(4);
+            writer.Advance(4);
+            var stream = writer.AsStream();
+            Write(message, stream);
+            BitConverter.TryWriteBytes(m.Span, (int)stream.Length);
         }
 
-        private IMemoryOwner<byte> WriteRequestConnectionMessage(MemoryBufferWriter writer, OnDemandConnectionMessage message)
+        public static void Write(TunnelMessage message, Stream writer)
         {
-            return MessagePackWriter.Create(writer)
-                .Array(1)
-                .Item().NullableStringArray(message.Targets)
-                .EndArray()
-                .Terminate()
-                .CreateMemoryOwner();
+            switch (message.Type)
+            {
+                case TunnelMessageType.HttpRequest:
+                    WriteRequestMessage(writer, (RequestMessage)message);
+                    break;
+                case TunnelMessageType.HttpResponse:
+                    WriteResponseMessage(writer, (ResponseMessage)message);
+                    break;
+                default:
+                    throw new ArgumentException($"Unknown message type: {message.Type}.", nameof(message));
+            }
         }
 
-        private IMemoryOwner<byte> WriteRequestMessage(MemoryBufferWriter writer, RequestMessage message)
+        private static void WriteRequestMessage(Stream writer, RequestMessage message)
         {
-            return MessagePackWriter.Create(writer)
-                .Array(5)
+            MessagePackWriter.Create(writer)
+                .Array(6)
+                .Int((int)TunnelMessageType.HttpRequest)
                 .Int(message.AckId)
                 .Text(message.HttpMethod)
-                .Text(message.Host)
+                .Text(message.Url)
                 .Item().Map(message.Headers, (w, v) => w.StringArray(v))
                 .Bytes(message.Content)
                 .EndArray()
-                .Terminate()
-                .CreateMemoryOwner();
+                .Terminate();
         }
 
-
-        private IMemoryOwner<byte> WriteResponseMessage(MemoryBufferWriter writer, ResponseMessage message)
+        private static void WriteResponseMessage(Stream writer, ResponseMessage message)
         {
-            return MessagePackWriter.Create(writer)
-                .Array(4)
+            MessagePackWriter.Create(writer)
+                .Array(5)
+                .Int((int)TunnelMessageType.HttpResponse)
                 .Int(message.AckId)
                 .Int(message.StatusCode)
                 .Item().Map(message.Headers, (w, v) => w.StringArray(v))
                 .Bytes(message.Content)
                 .EndArray()
-                .Terminate()
-                .CreateMemoryOwner();
-        }
-
-        private static OnDemandConnectionMessage ParseOnDemandConnectionMessage(byte[] input, ref int offset)
-        {
-            _ = MessagePackBinary.ReadArrayHeader(input, offset, out var c);
-            offset += c;
-            var targetIds = MessagePackHelper.ReadNullableStringArray(input, ref offset, "targetIds");
-
-            return new OnDemandConnectionMessage
-            {
-                Targets = targetIds
-            };
-        }
-
-        private static RequestMessage ParseHttpRequestMessage(byte[] input, ref int offset)
-        {
-            _ = MessagePackBinary.ReadArrayHeader(input, offset, out var c);
-            offset += c;
-            var ackId = MessagePackHelper.ReadInt32(input, ref offset, "ackId");
-            var method = MessagePackHelper.ReadString(input, ref offset, "method");
-            var host = MessagePackHelper.ReadString(input, ref offset, "host");
-
-            var headers = ReadHeaders(input, ref offset);
-
-            var body = MessagePackHelper.ReadBytes(input, ref offset, "body");
-
-            return new RequestMessage
-            {
-                AckId = ackId,
-                HttpMethod = method,
-                Host = host,
-                Headers = headers,
-                Content = body
-            };
-        }
-
-        private static Dictionary<string, string[]> ReadHeaders(byte[] input, ref int offset)
-        {
-            var headerCount = MessagePackHelper.ReadMapLength(input, ref offset, "headers");
-
-            if (headerCount > 0)
-            {
-                var headers = new Dictionary<string, string[]>((int)headerCount);
-                for (var i = 0; i < headerCount; i++)
-                {
-                    var key = MessagePackHelper.ReadString(input, ref offset, $"headers[{i}].key");
-                    var value = MessagePackHelper.ReadStringArray(input, ref offset, $"headers[{i}].value");
-                    headers.Add(key, value);
-                }
-                return headers;
-            }
-
-            return null;
-        }
-
-        private static ResponseMessage ParseHttpResponseMessage(byte[] input, ref int offset)
-        {
-            _ = MessagePackBinary.ReadArrayHeader(input, offset, out var c);
-            offset += c;
-            var ackId = MessagePackHelper.ReadInt32(input, ref offset, "ackId");
-            var code = MessagePackHelper.ReadInt32(input, ref offset, "code");
-            var headers = ReadHeaders(input, ref offset);
-            var body = MessagePackHelper.ReadBytes(input, ref offset, "body");
-
-            return new ResponseMessage
-            {
-                AckId = ackId,
-                StatusCode = code,
-                Headers = headers,
-                Content = body
-            };
-        }
-
-        private byte ParseMeta(byte[] input, out int offset)
-        {
-            // We use an array to wrap our raw message.
-            // In json format: [ <typeid>, <raw message> ].
-            // Here raw message is another array.
-            // So actual format is: [ <typeid>, [ <raw>, <messages>, <body> ]]
-            // In message pack, an array with 2 element encoded as 0x92
-            // Type id is a number between 0 to 127, and in message pack, it encoded as itself, i.e. 0x00~0x7f
-            // See messagepack spec: https://github.com/msgpack/msgpack/blob/master/spec.md
-            if (input.Length > 2 && input[0] == 0x92 && input[1] < 0x80)
-            {
-                // Ensure: second element is an array.
-                if (input[2] >= 0x90 && input[2] <= 0x9f)
-                {
-                    offset = 2;
-                    return input[1];
-                }
-            }
-
-            offset = 0;
-            return 0;
+                .Terminate();
         }
     }
 }

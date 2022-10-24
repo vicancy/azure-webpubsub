@@ -1,28 +1,39 @@
-﻿using System.IdentityModel.Tokens.Jwt;
+﻿using System;
+using System.Buffers;
+using System.IdentityModel.Tokens.Jwt;
+using System.IO.Pipelines;
 using System.Net.WebSockets;
+using System.Security.Authentication;
 using System.Security.Claims;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Channels;
 
+using Azure.Core;
+
+using Microsoft.AspNetCore.Http.Connections;
 using Microsoft.Azure.SignalR;
+using Microsoft.Azure.SignalR.HttpTunnel;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
+using Newtonsoft.Json.Linq;
 
-namespace local_host.TunnelConnections
+using static Microsoft.AspNetCore.WebSockets.Internal.Constants;
+using static Microsoft.Azure.SignalR.HttpTunnel.TunnelMessageProtocol;
+
+namespace local_host
 {
-    public sealed class RawWebSocketClient : IDisposable
+    public sealed class TunnelClient : IDisposable
     {
         private readonly CancellationTokenSource _cts = new CancellationTokenSource();
         private readonly TaskCompletionSource<WebSocketCloseStatus?> _closeTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly ClientWebSocket _webSocket;
 
-        private readonly Channel<WebSocketReceivedResult> _channel;
         private readonly ILogger _logger;
+        private string _tunnelEndpoint;
         private readonly Uri _urlWithToken;
-
-        public ChannelReader<WebSocketReceivedResult> ReceivedMessageReader { get; }
 
         public Task ReceiveTask { get; }
 
@@ -34,7 +45,25 @@ namespace local_host.TunnelConnections
 
         public string UserId { get; }
 
-        public RawWebSocketClient(string uri,
+        public TunnelClient(TokenCredential token, string hub, ILoggerFactory loggerFactory)
+        {
+            _token = token;
+            _hub = hub;
+            _loggerFactory = loggerFactory;
+            _logger = _loggerFactory.CreateLogger<TunnelClient>();
+            _tunnelEndpoint = $"ws://localhost:8080/api/tunnel/:connect?hub={hub}";
+
+            _urlWithToken = new Uri(_tunnelEndpoint);
+
+            _logger = loggerFactory?.CreateLogger<TunnelClient>() ?? NullLogger<TunnelClient>.Instance;
+
+            var ws = new ClientWebSocket();
+            _webSocket = ws;
+            ConnectTask = ConnectAsync();
+            ReceiveTask = ReceiveLoop(_cts.Token);
+        }
+
+        public TunnelClient(string uri,
                                   string signingKey = null,
                                   ILoggerFactory loggerFactory = null,
                                   string userId = null,
@@ -50,24 +79,16 @@ namespace local_host.TunnelConnections
             UserId = userId;
         }
 
-        public RawWebSocketClient(string uri, ILoggerFactory loggerFactory, IEnumerable<string> subProtocols = null)
+        public TunnelClient(string uri, ILoggerFactory loggerFactory, IEnumerable<string> subProtocols = null)
             : this(new Uri(uri), loggerFactory, subProtocols, null)
         {
         }
 
-        public RawWebSocketClient(Uri fullUri, ILoggerFactory loggerFactory, IEnumerable<string> subProtocols = null, Dictionary<string, string[]> headers = null)
+        public TunnelClient(Uri fullUri, ILoggerFactory loggerFactory, IEnumerable<string> subProtocols = null, Dictionary<string, string[]> headers = null)
         {
             _urlWithToken = fullUri;
 
-            _logger = loggerFactory?.CreateLogger<RawWebSocketClient>() ?? NullLogger<RawWebSocketClient>.Instance;
-
-            _channel = Channel.CreateUnbounded<WebSocketReceivedResult>(new UnboundedChannelOptions()
-            {
-                SingleWriter = true,
-                SingleReader = true
-            });
-
-            ReceivedMessageReader = _channel.Reader;
+            _logger = loggerFactory?.CreateLogger<TunnelClient>() ?? NullLogger<TunnelClient>.Instance;
 
             var ws = new ClientWebSocket();
             if (subProtocols != null)
@@ -89,10 +110,7 @@ namespace local_host.TunnelConnections
             }
             _webSocket = ws;
             ConnectTask = ConnectAsync();
-            ReceiveTask = ReceiveLoop(_cts.Token).ContinueWith(t =>
-            {
-                _channel.Writer.Complete(t.Exception);
-            });
+            ReceiveTask = ReceiveLoop(_cts.Token);
         }
 
         private static Uri GenerateUri(string uri, string signingKey, string userId, string queryString, string audience, Claim[] claims, bool anonymous, string accessToken)
@@ -113,7 +131,7 @@ namespace local_host.TunnelConnections
             _webSocket.Abort();
         }
 
-        public async Task<List<WebSocketReceivedResult>> StopAsync()
+        public async Task StopAsync()
         {
             try
             {
@@ -121,34 +139,24 @@ namespace local_host.TunnelConnections
                 await _webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "", default);
             }
             catch { }
+
             // Wait for the receiving tast to end
             await ReceiveTask;
+        }
 
+        public Func<HttpRequestMessage, Task<HttpResponseMessage>> RequestHandler { get; set; }
 
-            var messages = new List<WebSocketReceivedResult>();
+        private async Task ConnectAsync()
+        {
+            _logger.LogInformation($"Connecting to {_urlWithToken}");
             try
             {
-                // read the remaining
-                while (await ReceivedMessageReader.WaitToReadAsync())
-                {
-                    while (ReceivedMessageReader.TryRead(out var m))
-                    {
-                        messages.Add(m);
-                    }
-                }
+                await _webSocket.ConnectAsync(_urlWithToken, _cts.Token);
             }
-            catch { }
-            return messages;
-        }
-
-        public Task SendMessageAsync(string message, WebSocketMessageType messageType)
-        {
-            return _webSocket.SendAsync(Encoding.UTF8.GetBytes(message), messageType, true, default);
-        }
-
-        private Task ConnectAsync()
-        {
-            return _webSocket.ConnectAsync(_urlWithToken, _cts.Token);
+            catch (Exception e)
+            {
+                _logger.LogError($"Error connecting to {_urlWithToken}: {e.Message}");
+            }
         }
 
         private async Task ReceiveLoop(CancellationToken token)
@@ -179,17 +187,92 @@ namespace local_host.TunnelConnections
                         return;
                     }
 
-                    buffer.Advance(receiveResult.Count);
-                    if (receiveResult.EndOfMessage)
+                    // always binary
+                    if (receiveResult.MessageType != WebSocketMessageType.Binary)
                     {
-                        await _channel.Writer.WriteAsync(new WebSocketReceivedResult(buffer.ToArray(), receiveResult.MessageType));
-                        break;
+                        throw new InvalidDataException("Only support binary");
                     }
+
+                    var current = new ReadOnlySequence<byte>(memory[..receiveResult.Count]);
+                    while (Instance.TryParse(ref current, out var message))
+                    {
+                        if (message.Type == TunnelMessageType.HttpRequest)
+                        {
+                            // invoke remote
+                            var request = (RequestMessage)message;
+                            var response = await RequestHandler.Invoke(ToHttp(request));
+                            using var writer = new MemoryBufferWriter();
+
+                            // TODO: write directly to memory instead of convert
+                            var result = await ToResponse(request.AckId, response);
+                            Instance.Write(result, writer);
+                            using var owner = writer.CreateMemoryOwner();
+                            await _webSocket.SendAsync(owner.Memory, WebSocketMessageType.Binary, true, token);
+                        }
+                    }
+
+                    // advance to current parsed
+                    buffer.Advance(receiveResult.Count - (int)current.Length);
                 }
             }
         }
 
+        private static HttpRequestMessage ToHttp(RequestMessage request)
+        {
+            var http = new HttpRequestMessage()
+            {
+                RequestUri = new Uri(request.Url),
+                Method = new HttpMethod(request.HttpMethod),
+            };
+            if (request.Content.Length > 0)
+            {
+                var streamContent = new StreamContent(new MemoryStream(request.Content.ToArray()));
+                http.Content = streamContent;
+            }
+
+            // Copy the request headers
+            foreach (var (header, value) in request.Headers)
+            {
+                if (!http.Headers.TryAddWithoutValidation(header, value) && http.Content != null)
+                {
+                    http.Content?.Headers.TryAddWithoutValidation(header, value);
+                }
+            }
+            return http;
+        }
+
+        private async Task<ResponseMessage> ToResponse(int ackId, HttpResponseMessage message)
+        {
+            _logger.LogInformation($"Received response status code: {message.StatusCode}");
+            var bytes = new ResponseMessage
+            {
+                AckId = ackId,
+                Content = await message.Content.ReadAsByteArrayAsync(),
+                StatusCode = (int)message.StatusCode,
+                Headers = new Dictionary<string, string[]>()
+            };
+
+            foreach (var (key, header) in message.Headers)
+            {
+                //if (string.Equals("Connection", key, StringComparison.OrdinalIgnoreCase)) continue;
+                //if (string.Equals("Keep-Alive", key, StringComparison.OrdinalIgnoreCase)) continue;
+                bytes.Headers.Add(key, header.ToArray());
+            }
+
+            if (message.Content != null)
+            {
+                foreach (var (key, header) in message.Content.Headers)
+                {
+                    bytes.Headers.Add(key, header.ToArray());
+                }
+            }
+            return bytes;
+        }
+
         private static readonly JwtSecurityTokenHandler JwtTokenHandler = new JwtSecurityTokenHandler();
+        private TokenCredential _token;
+        private string _hub;
+        private readonly ILoggerFactory _loggerFactory;
 
         public static string GetAccessToken(string url,
                                             string signingKey,

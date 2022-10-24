@@ -948,6 +948,24 @@ namespace Microsoft.Azure.SignalR
             }
         }
 
+        public MessagePackArrayReader<TOuter> Bytes(out ReadOnlyMemory<byte> value) =>
+            Bytes(string.Empty, out value);
+
+        public MessagePackArrayReader<TOuter> Bytes(string fieldName, out ReadOnlyMemory<byte> value)
+        {
+            IncreaseIndex(fieldName);
+            try
+            {
+                value = MessagePackBinary.ReadBytes(_stream);
+                return this;
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidDataException($"Field {FieldDisplayName(fieldName)} is invalid.", ex);
+            }
+        }
+
+
         public MessagePackValueReader<MessagePackArrayReader<TOuter>> Simple(string fieldName = "")
         {
             IncreaseIndex(fieldName);
@@ -1029,19 +1047,17 @@ namespace Microsoft.Azure.SignalR
             return this;
         }
 
-        public MessagePackArrayReader<TOuter> SkipOptionals()
+        public TOuter EndArray(bool skipOptionals = true)
         {
-            while (_index != Count)
+            if (skipOptionals)
             {
-                _index++;
-                MessagePackBinary.ReadNextBlock(_stream);
+                while (_index != Count)
+                {
+                    _index++;
+                    MessagePackBinary.ReadNextBlock(_stream);
+                }
             }
-            return this;
-        }
-
-        public TOuter EndArray()
-        {
-            if (_index != Count)
+            else if (_index != Count)
             {
                 throw new InvalidDataException($"Have more items in array {_fieldName}.");
             }
@@ -1059,7 +1075,7 @@ namespace Microsoft.Azure.SignalR
 
         private bool HasOptional()
         {
-            if (_index == Count - 1)
+            if (_index == Count)
             {
                 return false;
             }
