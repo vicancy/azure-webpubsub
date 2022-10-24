@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "local-host": {
+      "commandName": "Project",
+      "commandLineArgs": "-p 8080"
+    }
+  }
+}
