@@ -204,7 +204,7 @@ namespace local_host
                             using var writer = new MemoryBufferWriter();
 
                             // TODO: write directly to memory instead of convert
-                            var result = await ToResponse(request.AckId, response);
+                            var result = await ToResponse(request.AckId, request.GlobalRouting, response);
                             Instance.Write(result, writer);
                             using var owner = writer.CreateMemoryOwner();
                             await _webSocket.SendAsync(owner.Memory, WebSocketMessageType.Binary, true, token);
@@ -241,7 +241,7 @@ namespace local_host
             return http;
         }
 
-        private async Task<ResponseMessage> ToResponse(int ackId, HttpResponseMessage message)
+        private async Task<ResponseMessage> ToResponse(int ackId, bool globalRouting, HttpResponseMessage message)
         {
             _logger.LogInformation($"Received response status code: {message.StatusCode}");
             var bytes = new ResponseMessage
@@ -249,7 +249,8 @@ namespace local_host
                 AckId = ackId,
                 Content = await message.Content.ReadAsByteArrayAsync(),
                 StatusCode = (int)message.StatusCode,
-                Headers = new Dictionary<string, string[]>()
+                Headers = new Dictionary<string, string[]>(),
+                GlobalRouting = globalRouting
             };
 
             foreach (var (key, header) in message.Headers)

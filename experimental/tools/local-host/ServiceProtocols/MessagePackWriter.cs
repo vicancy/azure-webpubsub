@@ -124,6 +124,37 @@ namespace Microsoft.Azure.SignalR
             return _outer;
         }
 
+        public TOuter StringMap(IDictionary<string, string> dict)
+        {
+            if (dict.Count == 0)
+            {
+                return EmptyMap();
+            }
+            MessagePackBinary.WriteMapHeader(_stream, dict.Count);
+            foreach (var (k, v) in dict)
+            {
+                MessagePackBinary.WriteString(_stream, k);
+                MessagePackBinary.WriteString(_stream, v);
+            }
+            return _outer;
+        }
+
+        public TOuter PayloadsMap(IDictionary<string, ReadOnlyMemory<byte>> payloads)
+        {
+            if (payloads?.Count > 0)
+            {
+                MessagePackBinary.WriteMapHeader(_stream, payloads.Count);
+                foreach (var (k, v) in payloads)
+                {
+                    MessagePackBinary.WriteString(_stream, k);
+                    var segment = v.GetArraySegment();
+                    MessagePackBinary.WriteBytes(_stream, segment.Array, segment.Offset, segment.Count);
+                }
+                return _outer;
+            }
+            return EmptyMap();
+        }
+
         public TOuter EmptyMap()
         {
             MessagePackBinary.WriteMapHeader(_stream, 0);
@@ -511,6 +542,16 @@ namespace Microsoft.Azure.SignalR
             return new(_stream, this);
         }
 
+        public MessagePackWriter<TOuter> TailItem()
+        {
+            DecreaseCount();
+            if (_count != 0)
+            {
+                throw new InvalidDataException("Too less item for this array.");
+            }
+            return new(_stream, _outer);
+        }
+
         public MessagePackArrayWriter<TOuter> Item<TValue>(
             Func<MessagePackWriter<MessagePackTerminator<Stream>>, TValue, MessagePackTerminator<Stream>> func,
             TValue value)
@@ -531,6 +572,13 @@ namespace Microsoft.Azure.SignalR
         {
             DecreaseCount();
             MessagePackBinary.WriteInt32(_stream, value);
+            return this;
+        }
+
+        public MessagePackArrayWriter<TOuter> Boolean(bool value)
+        {
+            DecreaseCount();
+            MessagePackBinary.WriteBoolean(_stream, value);
             return this;
         }
 

@@ -1,10 +1,7 @@
-﻿
-using Azure.Core;
+﻿using System.Net;
+using System.Text.Json;
+
 using Azure.Identity;
-using Azure.ResourceManager;
-using Azure.ResourceManager.Relay;
-using Azure.ResourceManager.Relay.Models;
-using Azure.ResourceManager.Resources;
 
 using local_host;
 
@@ -14,10 +11,6 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using Microsoft.Identity.Client;
-
-using System.Net;
-using System.Text.Json;
 
 var app = new CommandLineApplication();
 app.Name = "awaps-local-debug";
@@ -101,15 +94,6 @@ internal class TunnelServiceOptions
 
 static class HttpExtensions
 {
-    public static string GetDisplayUrl(this RelayedHttpListenerContext context)
-    {
-        var request = context.Request;
-        var uri = request.Url;
-        var method = request.HttpMethod;
-        var body = request.Headers[HttpResponseHeader.ContentLength];
-        return $"{method} {uri} {body}";
-    }
-
     public static string GetDisplayUrl(this HttpRequestMessage request)
     {
         var uri = request.RequestUri?.OriginalString ?? string.Empty;
@@ -117,7 +101,6 @@ static class HttpExtensions
         var body = request.Content?.Headers.ContentLength;
         return $"{method} {uri} {body}";
     }
-
 }
 
 internal class TunnelService
@@ -229,33 +212,6 @@ internal class TunnelService
         request.RequestUri = uriBuilder.Uri;
 
         return request;
-    }
-
-    public static HttpRequestMessage CreateProxyHttpRequest(RelayedHttpListenerContext context, Uri uri, string pathBase)
-    {
-        var requestMessage = new HttpRequestMessage();
-        var requestMethod = context.Request.HttpMethod;
-        if (context.Request.HasEntityBody)
-        {
-            var streamContent = new StreamContent(context.Request.InputStream);
-            requestMessage.Content = streamContent;
-        }
-
-        // Copy the request headers
-        foreach (var header in context.Request.Headers.AllKeys)
-        {
-            if (!requestMessage.Headers.TryAddWithoutValidation(header, context.Request.Headers[header]) && requestMessage.Content != null)
-            {
-                requestMessage.Content?.Headers.TryAddWithoutValidation(header, context.Request.Headers[header]);
-            }
-        }
-
-        requestMessage.Headers.Host = uri.Host;
-        requestMessage.Method = new HttpMethod(requestMethod);
-        var uriBuilder = new UriBuilder(uri.Scheme, uri.Host, uri.Port, context.Request.Url.LocalPath.Substring(pathBase.Length), context.Request.Url.Query);
-        requestMessage.RequestUri = uriBuilder.Uri;
-        
-        return requestMessage;
     }
 
     internal static class TokenHelper

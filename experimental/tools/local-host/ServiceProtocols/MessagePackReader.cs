@@ -931,6 +931,23 @@ namespace Microsoft.Azure.SignalR
             }
         }
 
+        public MessagePackArrayReader<TOuter> Boolean(out bool value) =>
+            Boolean(string.Empty, out value);
+
+        public MessagePackArrayReader<TOuter> Boolean(string fieldName, out bool value)
+        {
+            IncreaseIndex(fieldName);
+            try
+            {
+                value = MessagePackBinary.ReadBoolean(_stream);
+                return this;
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidDataException($"Field {FieldDisplayName(fieldName)} is invalid.", ex);
+            }
+        }
+
         public MessagePackArrayReader<TOuter> Int(out int value) =>
             Int(string.Empty, out value);
 
