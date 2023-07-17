@@ -23,7 +23,6 @@ export function addProperty(o: object, p: string, f: (...args: unknown[]) => unk
 export interface WebPubSubExtensionOptions {
   connectionString: string;
   hub: string;
-  path: string;
   webPubSubServiceClientOptions?: WebPubSubServiceClientOptions;
 }
 

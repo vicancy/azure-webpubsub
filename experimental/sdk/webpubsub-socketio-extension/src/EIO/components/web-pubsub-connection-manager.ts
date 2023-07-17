@@ -76,7 +76,7 @@ export class WebPubSubConnectionManager {
     );
 
     this._webPubSubEventHandler = new WebPubSubEventHandler(this._webPubSubOptions.hub, {
-      path: this._webPubSubOptions.path,
+      path: "/eventhandler/",
       handleConnect: async (req, res) => {
         let timeout: NodeJS.Timeout;
         let cleanup: (error: string) => void;
