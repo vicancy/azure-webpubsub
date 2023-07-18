@@ -1,8 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { WebPubSubServiceClientOptions } from "@azure/web-pubsub";
+import { WebPubSubServiceClient, WebPubSubServiceClientOptions } from "@azure/web-pubsub";
+import { AzureKeyCredential, TokenCredential } from "@azure/core-auth";
 import debugModule from "debug";
+import { BroadcastOptions } from "socket.io-adapter";
 
 export const T = (now: Date): string => `${now.toLocaleString().replace(" AM", "").replace(" PM", "")}:${now.getMilliseconds().toString().padStart(3, '0')}`; // prettier-ignore
 
@@ -20,10 +22,48 @@ export function addProperty(o: object, p: string, f: (...args: unknown[]) => unk
   });
 }
 
+// 2 option definitions refer to https://github.com/Azure/azure-sdk-for-js/blob/%40azure/web-pubsub_1.1.1/sdk/web-pubsub/web-pubsub/review/web-pubsub.api.md?plain=1#L173
 export interface WebPubSubExtensionOptions {
   connectionString: string;
   hub: string;
   webPubSubServiceClientOptions?: WebPubSubServiceClientOptions;
+}
+
+export interface WebPubSubExtensionCredentialOptions {
+  endpoint: string;
+  credential: AzureKeyCredential | TokenCredential;
+  hub: string;
+  webPubSubServiceClientOptions?: WebPubSubServiceClientOptions;
+}
+
+export function getWebPubSubServiceClient(options: WebPubSubExtensionOptions | WebPubSubExtensionCredentialOptions) {
+  // if owns connection string, handle as `WebPubSubExtensionOptions`
+  if (Object.keys(options).indexOf("connectionString") !== -1) {
+    const requiredKeys = ["connectionString", "hub"];
+
+    for (const key of requiredKeys) {
+      if (!options[key] || options[key] === "")
+        throw new Error(`Expect valid ${key} is required, got null or empty value.`);
+    }
+
+    return new WebPubSubServiceClient(
+      options["connectionString"],
+      options["hub"],
+      options["webPubSubServiceClientOptions"]
+    );
+  } else {
+    const requiredKeys = ["endpoint", "credential", "hub"];
+    for (const key of requiredKeys) {
+      if (!options[key] || options[key] === "")
+        throw new Error(`Expect valid ${key} is required, got null or empty value.`);
+    }
+    return new WebPubSubServiceClient(
+      options["endpoint"],
+      options["credential"],
+      options["hub"],
+      options["webPubSubServiceClientOptions"]
+    );
+  }
 }
 
 /**
@@ -45,12 +85,21 @@ export function toAsync<T>(syncFunc: (...args: unknown[]) => unknown): (...args:
 }
 
 /**
- * Stringify a set of string .
- * @param set - a set or string. Example: Set\<string\>{"a", "b"}
+ * Stringify a set or list of string .
+ * @param set - a set or list of string. Example: Set\<string\>{"a", "b"}
  * @returns the stringified set. Example: "{ "a", "b" }"
  */
-export function toString(set: Set<string> | IterableIterator<string>): string {
+export function toString(set: Set<string> | string[] | IterableIterator<string>): string {
+  // if (set.rooms) return `${{toString(set.rooms)}}`
   return set ? `{ "${[...set].join('", "')}" }` : "{}";
 }
 
+// `JSON.stringify` cannot stringify `BroadcastOptions` completely. `rooms` and `except` detail will be lost.
+export function toOptionsString(option: BroadcastOptions): string {
+  return `{rooms: ${toString(option.rooms)}, except: ${toString(option.except)},\
+flags: ${JSON.stringify(option.flags)}}`;
+}
+
 export { debugModule };
+
+export const TUNNEL_PATH = "/eventhandler/";
