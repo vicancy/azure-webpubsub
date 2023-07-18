@@ -207,7 +207,7 @@ export class WebPubSubConnectionManager {
   /**
    * @returns AWPS event handler middleware for Express Server.
    */
-  public getEventHandlerMiddleware() {
+  public getEventHandlerExpressMiddleware() {
     return this._webPubSubEventHandler.getMiddleware();
   }
 
