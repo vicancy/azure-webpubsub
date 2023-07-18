@@ -40,7 +40,6 @@ const wpsExt = require("@azure/web-pubsub-socket.io");
 // Add an Web PubSub Option
 const webPubSubOptions = {
   hub: "eio_hub",
-  path: "/eventhandler/",
   connectionString: "<web-pubsub-connection-string>",
 };
 
@@ -55,7 +54,6 @@ const key = new AzureKeyCredential("<Key>");
 
 const webPubSubOptions = {
   hub: "eio_hub",
-  path: "/eventhandler/",
   endpoint: "<web-pubsub-endpoint>",
   credential: key,
 };
