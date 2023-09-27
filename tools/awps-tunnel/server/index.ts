@@ -210,4 +210,6 @@ function start(connectionString: string | undefined, endpoint: string | undefine
   server.listen(port, () => {
     console.log(`Open webview at: http://localhost:${port}`);
   });
+
+  
 }
