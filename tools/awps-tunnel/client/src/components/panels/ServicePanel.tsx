@@ -2,6 +2,7 @@ import { Icon } from "@fluentui/react/lib/Icon";
 import { ConnectionStatus } from "../../models";
 import { Switch } from "@fluentui/react-components";
 import { useState } from "react";
+import { LiveTraceSection } from "../LiveTraceSection";
 
 export interface ServicePanelProps {
   endpoint?: string;
@@ -23,7 +24,7 @@ export function ServicePanel({ endpoint, status, liveTraceUrl }: ServicePanelPro
       {liveTraceUrl && (
         <>
           <Switch label={showLiveTrace ? "Disconnect live trace" : "connect to live trace"} checked={showLiveTrace} onChange={(ev) => setShowLiveTrace(ev.currentTarget.checked)}></Switch>
-          {showLiveTrace && <iframe className="flex-fill" src={liveTraceUrl} title="Live trace"></iframe>}
+          {showLiveTrace && <LiveTraceSection url={liveTraceUrl}></LiveTraceSection>}
         </>
       )}
     </div>
