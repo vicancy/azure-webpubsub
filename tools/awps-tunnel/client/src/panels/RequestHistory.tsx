@@ -6,14 +6,64 @@ import { ResizablePanel } from "../components/ResizablePanel";
 import { useDataContext } from "../providers/DataContext";
 import { HttpHistoryItem } from "../models";
 import { Button } from "@fluentui/react-components";
-import { bundleIcon, Delete24Filled, Delete24Regular } from "@fluentui/react-icons";
+import { bundleIcon, Delete24Filled, Delete24Regular, ArrowDownload24Filled, ArrowDownload24Regular } from "@fluentui/react-icons";
 
 import { Dialog, DialogTrigger, DialogSurface, DialogTitle, DialogBody, DialogActions, DialogContent } from "@fluentui/react-components";
 
 const ClearHistoryIcon = bundleIcon(Delete24Filled, Delete24Regular);
+const ExportHistoryIcon = bundleIcon(ArrowDownload24Filled, ArrowDownload24Regular);
 
 export interface RequestHistoryProps {
   onUnreadChange: (unread: number) => void;
+}
+
+function convertToHAR(items: HttpHistoryItem[]): HarFile {
+  return {
+    log: {
+      version: "1.2",
+      creator: {
+        name: "awps-tunnel",
+        version: "1.0", // to do: uniform the package.json version with server
+      },
+      entries: items.map((entry) => ({
+        startedDateTime: new Date(entry.requestAtOffset).toISOString(),
+        time: entry.responseAtOffset ? -1 : entry.responseAtOffset! - entry.requestAtOffset,
+        request: {
+          method: entry.methodName,
+          url: entry.url,
+          httpVersion: "HTTP/1.1",
+          headers: [], // todo: extract headers and body from http raw
+          queryString: [],
+          cookies: [],
+          headersSize: -1,
+          bodySize: 0,
+        },
+        response: {
+          status: entry.code ?? 0,
+          statusText: "",
+          httpVersion: "HTTP/1.1",
+          headers: [],
+          content: {
+            size: entry.responseRaw?.length ?? 0,
+            mimeType: "",
+            text: ""
+          },
+          headersSize: -1,
+          bodySize: 0,
+        },
+        timings: {
+          blocked: -1,
+          dns: -1,
+          ssl: -1,
+          connect: -1,
+          send: -1,
+          wait: -1,
+          receive: -1,
+          _blocked_queueing: -1,
+        },
+      })),
+    },
+  };
 }
 
 export function RequestHistory(props: RequestHistoryProps) {
@@ -43,7 +93,24 @@ export function RequestHistory(props: RequestHistoryProps) {
   function clearRequestHistory() {
     dataFetcher.invoke("clearTrafficHistory");
   }
-  
+  function exportRequestHistory() {
+    const harObject = convertToHAR(items);
+
+    // Convert the HAR object to a JSON string
+    const harString = JSON.stringify(harObject, null, 2);
+
+    // Download the HAR file
+    const blob = new Blob([harString], { type: "application/json" });
+    const link = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+
+    link.href = url;
+    link.setAttribute("download", "export.har");
+    document.body.appendChild(link);
+    link.click();
+
+    document.body.removeChild(link);
+  }
   const overviewPanel = (
     <table className="table table-hover" aria-labelledby="tabelLabel">
       <thead>
@@ -84,6 +151,11 @@ export function RequestHistory(props: RequestHistoryProps) {
         <div className="d-flex flex-row">
           <h5>All requests</h5>
           <div className="flex-fill"></div>
+          <div className="flex-right">
+            <Button appearance="subtle" size="large" onClick={() => exportRequestHistory()} icon={<ExportHistoryIcon />}>
+              Export
+            </Button>
+          </div>
           <div className="flex-right">
             <Dialog open={openDialog} onOpenChange={(event, data) => setOpenDialog(data.open)}>
               <DialogTrigger disableButtonEnhancement>
@@ -165,4 +237,93 @@ function Details({ item }: { item?: HttpHistoryItem }) {
       </div>
     </div>
   );
+}
+
+interface HarCreator {
+  name: string;
+  version: string;
+}
+
+interface HarBrowser {
+  name: string;
+  version: string;
+}
+
+interface HarPageTiming {
+  onLoad: number;
+  comment?: string;
+}
+
+interface HarPage {
+  startedDateTime: string;
+  id: string;
+  title: string;
+  pageTimings: HarPageTiming;
+}
+
+interface HarHeader {
+  name: string;
+  value: string;
+}
+
+interface HarQueryString {
+  name: string;
+  value: string;
+}
+
+interface HarRequest {
+  method: string;
+  url: string;
+  httpVersion: string;
+  headers: HarHeader[];
+  queryString: HarQueryString[];
+}
+
+interface HarContent {
+  size: number;
+  mimeType: string;
+}
+
+interface HarResponse {
+  status: number;
+  statusText: string;
+  httpVersion: string;
+  headers: HarHeader[];
+  content: HarContent;
+}
+
+interface HarCache {}
+
+interface HarTimings {
+  blocked: number;
+  dns: number;
+  connect: number;
+  send: number;
+  wait: number;
+  receive: number;
+  ssl: number;
+  comment?: string;
+}
+
+interface HarEntry {
+  startedDateTime: string;
+  time: number;
+  request: HarRequest;
+  response: HarResponse;
+  cache?: HarCache;
+  timings?: HarTimings;
+  comment?: string;
+}
+
+interface HarLog {
+  version: string;
+  creator: HarCreator;
+  browser?: HarBrowser;
+  pages?: HarPage[];
+  entries: HarEntry[];
+  comment?: string;
+}
+
+interface HarFile {
+  log: HarLog;
 }

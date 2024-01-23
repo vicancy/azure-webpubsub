@@ -4,6 +4,34 @@ export function tryParseInt(port: string | undefined): number | undefined {
   return isNaN(number) ? undefined : number;
 }
 
+// Function to extract headers and body from HTTP request raw data
+export function extractHeadersAndBody(requestRaw) {
+  const decoder = new StringDecoder('utf-8');
+  let headers = {};
+  let body = '';
+
+  // Split raw data into headers and body
+  const [rawHeaders, rawBody] = requestRaw.split('\r\n\r\n');
+  
+  // Parse headers
+  rawHeaders.split('\r\n').forEach((line, index) => {
+    if (index === 0) {
+      // Skip the HTTP status line
+      return;
+    }
+    
+    const [key, value] = line.split(': ');
+    headers[key.toLowerCase()] = value;
+  });
+
+  // Parse body
+  if (rawBody) {
+    body = decoder.write(rawBody);
+  }
+
+  return { headers, body };
+}
+
 export function dumpRawRequest(proxiedUrl: URL, message: { Url: string; HttpMethod: string; Headers?: Record<string, string[]>; Content?: Uint8Array }): string {
   const headers = message.Headers
     ? Object.entries(message.Headers)
