@@ -15,6 +15,7 @@ import { AzureCliCredential, ChainedTokenCredential, EnvironmentCredential, Mana
 import { parseUrl, dumpRawRequest, getRawResponse, tryParseInt } from "./util";
 
 import packageJson from "./package.json";
+import { VisualStudioCredential } from "./VisualStudioCredentials";
 const name = packageJson["cli-name"];
 
 interface Settings {
@@ -382,5 +383,13 @@ function createRunCommand(run: Command, dbFile: string, settings: Settings, comm
 }
 
 function getCredential() {
+  // TODO: env - config mapping
+  if (process.env.VsIntegration) {
+    if (!process.env.TenantId) {
+      throw new Error("TenantId is required for VisualStudioCredential.");
+    }
+
+    return new VisualStudioCredential({ tenantId: process.env.TenantId });
+  }
   return new ChainedTokenCredential(new AzureCliCredential(), new EnvironmentCredential(), new ManagedIdentityCredential());
 }
